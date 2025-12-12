@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass
 import torch
 from torch import nn
-from accelerated_inference.kvpress.base_press import BasePress
+from kvpress.base_press import BasePress
 
 logger = logging.getLogger(__name__)
 

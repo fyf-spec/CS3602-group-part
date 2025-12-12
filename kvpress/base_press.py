@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from transformers import PreTrainedModel, QuantizedCache
-from accelerated_inference.kvpress.utils import extract_keys_and_values
+from kvpress.utils import extract_keys_and_values
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import torch
 from torch import nn
-from accelerated_inference.kvpress.presses.scorer_press import ScorerPress
+from kvpress.presses.scorer_press import ScorerPress
 
 @dataclass
 class KnormPress(ScorerPress):
