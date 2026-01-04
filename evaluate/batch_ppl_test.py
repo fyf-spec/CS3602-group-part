@@ -100,6 +100,25 @@ METHODS = [
             "--update_interval", str(DEFAULT_PARAMS["update_interval"]),
         ],
     },
+    {
+        "name": "int8_baseline",
+        "description": "INT8 weight-only + Full KV cache",
+        "extra_args": [
+            "--context_length", str(DEFAULT_PARAMS["context_length"]),
+            "--ckpt_dir", "checkpoints/pythia-2.8b-int8",
+        ],
+    },
+    {
+        "name": "int8_lazy_unified",
+        "description": "INT8 weight-only + LazyUnified KV cache",
+        "extra_args": [
+            "--separator_size", str(DEFAULT_PARAMS["separator_size"]),
+            "--heavy_size", str(DEFAULT_PARAMS["heavy_size"]),
+            "--local_size", str(DEFAULT_PARAMS["local_size"]),
+            "--update_interval", str(DEFAULT_PARAMS["update_interval"]),
+            "--ckpt_dir", "checkpoints/pythia-2.8b-int8",
+        ],
+    },
 ]
 
 

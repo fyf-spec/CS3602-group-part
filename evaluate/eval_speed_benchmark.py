@@ -1,11 +1,12 @@
 """
 Speed/Latency Benchmark for Pythia-2.8b with Multiple KV Cache Strategies
 
-This script compares decode latency across 4 modes:
+This script compares decode latency across multiple modes:
 1. Baseline: Full KV cache (no eviction)
 2. StreamingLLM: Sink + Recent window (O(1) eviction)
 3. H2O: Heavy Hitter + Recent (attention-based eviction every step)
 4. LazyH2O: Periodic H2O (attention-based eviction every N steps)
+5. INT8 modes: INT8 weight-only quantization combined with KV cache strategies
 
 Usage:
     python evaluate/eval_speed_benchmark.py --mode baseline
@@ -14,6 +15,7 @@ Usage:
     python evaluate/eval_speed_benchmark.py --mode lazy_h2o --update_interval 10
     python evaluate/eval_speed_benchmark.py --mode sepllm --separator_size 64 --local_size 256
     python evaluate/eval_speed_benchmark.py --mode unified --separator_size 64 --heavy_size 128 --local_size 256
+    python evaluate/eval_speed_benchmark.py --mode int8_lazy_unified --ckpt_dir checkpoints/pythia-2.8b-int8
 """
 
 import sys
@@ -69,7 +71,8 @@ def parse_args():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["baseline", "streaming", "h2o", "lazy_h2o", "sepllm", "unified", "lazy_unified"],
+        choices=["baseline", "streaming", "h2o", "lazy_h2o", "sepllm", "unified", "lazy_unified",
+                 "int8_baseline", "int8_lazy_unified"],
         default="baseline",
         help="KV cache strategy to use"
     )
@@ -102,6 +105,10 @@ def parse_args():
     # SepLLM / Unified specific
     parser.add_argument("--separator_size", type=int, default=64, help="Max separator tokens to keep (SepLLM/Unified)")
     parser.add_argument("--local_size", type=int, default=256, help="Local window size (SepLLM/Unified)")
+    
+    # INT8 specific
+    parser.add_argument("--ckpt_dir", type=str, default=None,
+                        help="INT8 checkpoint directory (required for int8_* modes)")
     
     return parser.parse_args()
 
@@ -227,6 +234,27 @@ def setup_cache(model, tokenizer, args):
         print(f"Mode: LazyUnified (start={args.start_size}, sep={args.separator_size}, "
               f"heavy={args.heavy_size}, local={args.local_size}, interval={args.update_interval})")
     
+    elif mode == "int8_baseline":
+        # INT8 baseline: no KV cache eviction
+        print("Mode: INT8 Baseline (no KV cache eviction)")
+    
+    elif mode == "int8_lazy_unified":
+        # INT8 + LazyUnified: INT8 weights + LazyUnified KV cache eviction
+        k_seq_dim = v_seq_dim = 2
+        enable_gpt_neox_pos_shift_attention(model)
+        kv_cache = LazyUnifiedKVCache(
+            tokenizer=tokenizer,
+            start_size=args.start_size,
+            separator_size=args.separator_size,
+            heavy_size=args.heavy_size,
+            local_size=args.local_size,
+            update_interval=args.update_interval,
+            k_seq_dim=k_seq_dim,
+            v_seq_dim=v_seq_dim,
+        )
+        print(f"Mode: INT8 + LazyUnified (start={args.start_size}, sep={args.separator_size}, "
+              f"heavy={args.heavy_size}, local={args.local_size}, interval={args.update_interval})")
+    
     return kv_cache
 
 
@@ -276,15 +304,15 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
             prefill_ids,
             past_key_values=past_key_values,
             use_cache=True,
-            output_attentions=(mode in ["h2o", "lazy_h2o", "unified", "lazy_unified"]),
+            output_attentions=(mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]),
         )
         past_key_values = outputs.past_key_values
         
         # Apply cache eviction
         if kv_cache is not None:
-            if mode in ["h2o", "lazy_h2o", "unified", "lazy_unified"]:
+            if mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]:
                 attn = outputs.attentions[0] if hasattr(outputs, 'attentions') and outputs.attentions else None
-                if mode in ["unified", "lazy_unified"]:
+                if mode in ["unified", "lazy_unified", "int8_lazy_unified"]:
                     past_key_values = kv_cache(past_key_values, prefill_ids, attn)
                 else:
                     past_key_values = kv_cache(past_key_values, attn)
@@ -300,13 +328,13 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
             next_token,
             past_key_values=past_key_values,
             use_cache=True,
-            output_attentions=(mode in ["h2o", "lazy_h2o", "unified", "lazy_unified"]),
+            output_attentions=(mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]),
         )
         past_key_values = outputs.past_key_values
         if kv_cache is not None:
-            if mode in ["h2o", "lazy_h2o", "unified", "lazy_unified"]:
+            if mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]:
                 attn = outputs.attentions[0] if hasattr(outputs, 'attentions') and outputs.attentions else None
-                if mode in ["unified", "lazy_unified"]:
+                if mode in ["unified", "lazy_unified", "int8_lazy_unified"]:
                     past_key_values = kv_cache(past_key_values, next_token, attn)
                 else:
                     past_key_values = kv_cache(past_key_values, attn)
@@ -330,14 +358,14 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
                 next_token,
                 past_key_values=past_key_values,
                 use_cache=True,
-                output_attentions=(mode in ["h2o", "lazy_h2o", "unified", "lazy_unified"]),
+                output_attentions=(mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]),
             )
             past_key_values = outputs.past_key_values
             
             if kv_cache is not None:
-                if mode in ["h2o", "lazy_h2o", "unified", "lazy_unified"]:
+                if mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]:
                     attn = outputs.attentions[0] if hasattr(outputs, 'attentions') and outputs.attentions else None
-                    if mode in ["unified", "lazy_unified"]:
+                    if mode in ["unified", "lazy_unified", "int8_lazy_unified"]:
                         past_key_values = kv_cache(past_key_values, next_token, attn)
                     else:
                         past_key_values = kv_cache(past_key_values, attn)
@@ -431,11 +459,34 @@ def plot_results(results, output_dir, mode, args):
 def main():
     args = parse_args()
     
+    # Validate INT8 mode requirements
+    is_int8_mode = args.mode.startswith("int8_")
+    if is_int8_mode and args.ckpt_dir is None:
+        print("ERROR: --ckpt_dir is required for INT8 modes")
+        print("Generate checkpoint with: python -m accelerated_inference.quantization.quantize")
+        return
+    
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load model
-    model, tokenizer = load_model(args.model_name_or_path)
+    # Load model (INT8 or FP16)
+    if is_int8_mode:
+        try:
+            from accelerated_inference.quantization.load_int8_model import load_int8_model
+            model, tokenizer = load_int8_model(
+                args.model_name_or_path, 
+                args.ckpt_dir,
+                dtype=torch.bfloat16,  # INT8 kernel requires bfloat16
+                device="cuda"
+            )
+        except ImportError as e:
+            print(f"ERROR: Failed to import INT8 model loader: {e}")
+            print("Please compile the INT8 extension first:")
+            print("  cd accelerated_inference/accelerated_inference/quantization/int8_weight_only")
+            print("  pip install . --no-build-isolation")
+            return
+    else:
+        model, tokenizer = load_model(args.model_name_or_path)
     
     # Setup cache based on mode
     kv_cache = setup_cache(model, tokenizer, args)
@@ -445,6 +496,8 @@ def main():
     print(f"{'='*60}")
     print(f"Model: {args.model_name_or_path}")
     print(f"Mode: {args.mode}")
+    if is_int8_mode:
+        print(f"INT8 Checkpoint: {args.ckpt_dir}")
     print(f"Cache Config: start={args.start_size}, recent={args.recent_size}")
     if args.mode in ["h2o", "lazy_h2o"]:
         print(f"  heavy_size: {args.heavy_size}")

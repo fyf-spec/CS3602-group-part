@@ -7,9 +7,11 @@ This package provides implementations of various KV cache compression strategies
 - StreamingLLM: Sink + Recent window
 - SepLLM: Separator-aware eviction
 - UnifiedKVCache: Combined strategies
+- LazyUnifiedKVCache: Periodic update version of UnifiedKVCache
+- INT8 Quantization: Weight-only INT8 quantization for Linear layers
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Import main utilities
 from .utils import (
@@ -21,10 +23,19 @@ from .utils import (
 # Import KV cache presses
 try:
     from .kvpress.presses.benchmark_presses import StartRecentKVCache, SepLLMKVCache
-    from .kvpress.presses.unified_press import UnifiedKVCache
+    from .kvpress.presses.unified_press import UnifiedKVCache, LazyUnifiedKVCache
 except ImportError:
     # Fallback if kvpress module structure is different
     pass
+
+# Import quantization module (optional, requires CUDA extension)
+try:
+    from .quantization import Int8Linear
+    from .quantization.load_int8_model import load_int8_model
+except ImportError:
+    # CUDA extension not compiled yet
+    Int8Linear = None
+    load_int8_model = None
 
 __all__ = [
     "__version__",
@@ -34,4 +45,7 @@ __all__ = [
     "StartRecentKVCache",
     "SepLLMKVCache",
     "UnifiedKVCache",
+    "LazyUnifiedKVCache",
+    "Int8Linear",
+    "load_int8_model",
 ]

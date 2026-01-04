@@ -6,6 +6,7 @@ This script evaluates perplexity on the local PG-19 dataset with multiple KV cac
 2. StreamingLLM: Sink + Recent window (token-by-token with KV cache eviction)
 3. H2O: Heavy Hitter + Recent (attention-based eviction)
 4. LazyH2O: Periodic H2O (lazy eviction between updates)
+5. INT8 modes: INT8 weight-only quantization combined with KV cache strategies
 
 Usage:
     python evaluate/eval_ppl_pg19.py --mode baseline --context_length 512
@@ -14,6 +15,7 @@ Usage:
     python evaluate/eval_ppl_pg19.py --mode lazy_h2o --update_interval 10
     python evaluate/eval_ppl_pg19.py --mode sepllm
     python evaluate/eval_ppl_pg19.py --mode unified
+    python evaluate/eval_ppl_pg19.py --mode int8_lazy_unified --ckpt_dir checkpoints/pythia-2.8b-int8
 """
 
 import sys
@@ -90,7 +92,8 @@ def parse_args():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["baseline", "streaming", "h2o", "lazy_h2o", "sepllm", "unified", "lazy_unified"],
+        choices=["baseline", "streaming", "h2o", "lazy_h2o", "sepllm", "unified", "lazy_unified",
+                 "int8_baseline", "int8_lazy_unified"],
         default="baseline",
         help="KV cache strategy to use"
     )
@@ -108,6 +111,10 @@ def parse_args():
     # SepLLM / Unified specific
     parser.add_argument("--separator_size", type=int, default=64, help="Max separator tokens")
     parser.add_argument("--local_size", type=int, default=256, help="Local window size")
+    
+    # INT8 specific
+    parser.add_argument("--ckpt_dir", type=str, default=None, 
+                        help="INT8 checkpoint directory (required for int8_* modes)")
     
     return parser.parse_args()
 
@@ -233,6 +240,29 @@ def setup_cache(model, tokenizer, args):
         need_attention = True
         need_input_ids = True
         print(f"Mode: LazyUnified (start={args.start_size}, sep={args.separator_size}, "
+              f"heavy={args.heavy_size}, local={args.local_size}, interval={args.update_interval})")
+    
+    elif mode == "int8_baseline":
+        # INT8 baseline: no KV cache eviction, just INT8 weights
+        print("Mode: INT8 Baseline (chunked evaluation, no KV cache eviction)")
+    
+    elif mode == "int8_lazy_unified":
+        # INT8 + LazyUnified: INT8 weights + LazyUnified KV cache eviction
+        k_seq_dim = v_seq_dim = 2
+        enable_gpt_neox_pos_shift_attention(model)
+        kv_cache = LazyUnifiedKVCache(
+            tokenizer=tokenizer,
+            start_size=args.start_size,
+            separator_size=args.separator_size,
+            heavy_size=args.heavy_size,
+            local_size=args.local_size,
+            update_interval=args.update_interval,
+            k_seq_dim=k_seq_dim,
+            v_seq_dim=v_seq_dim,
+        )
+        need_attention = True
+        need_input_ids = True
+        print(f"Mode: INT8 + LazyUnified (start={args.start_size}, sep={args.separator_size}, "
               f"heavy={args.heavy_size}, local={args.local_size}, interval={args.update_interval})")
     
     return kv_cache, need_attention, need_input_ids
@@ -453,6 +483,13 @@ def evaluate_ppl_streaming(model, tokenizer, texts, kv_cache, need_attention, ne
 def main():
     args = parse_args()
     
+    # Validate INT8 mode requirements
+    is_int8_mode = args.mode.startswith("int8_")
+    if is_int8_mode and args.ckpt_dir is None:
+        print("ERROR: --ckpt_dir is required for INT8 modes")
+        print("Generate checkpoint with: python -m accelerated_inference.quantization.quantize")
+        return
+    
     print(f"\n{'='*60}")
     print(f"PPL Evaluation Configuration")
     print(f"{'='*60}")
@@ -460,7 +497,10 @@ def main():
     print(f"Data directory: {args.data_dir}")
     print(f"Mode: {args.mode}")
     
-    if args.mode == "baseline":
+    if is_int8_mode:
+        print(f"INT8 Checkpoint: {args.ckpt_dir}")
+    
+    if args.mode in ["baseline", "int8_baseline"]:
         print(f"Context length: {args.context_length}")
     else:
         print(f"Cache Config: start={args.start_size}, recent={args.recent_size}")
@@ -473,8 +513,24 @@ def main():
     print(f"Num eval tokens: {args.num_eval_tokens if args.num_eval_tokens else 'All'}")
     print(f"{'='*60}\n")
     
-    # Load model
-    model, tokenizer = load_model(args.model_name_or_path)
+    # Load model (INT8 or FP16)
+    if is_int8_mode:
+        try:
+            from accelerated_inference.quantization.load_int8_model import load_int8_model
+            model, tokenizer = load_int8_model(
+                args.model_name_or_path, 
+                args.ckpt_dir,
+                dtype=torch.bfloat16,  # INT8 kernel requires bfloat16
+                device=device
+            )
+        except ImportError as e:
+            print(f"ERROR: Failed to import INT8 model loader: {e}")
+            print("Please compile the INT8 extension first:")
+            print("  cd accelerated_inference/accelerated_inference/quantization/int8_weight_only")
+            print("  pip install . --no-build-isolation")
+            return
+    else:
+        model, tokenizer = load_model(args.model_name_or_path)
     
     # Setup cache
     kv_cache, need_attention, need_input_ids = setup_cache(model, tokenizer, args)
@@ -483,7 +539,7 @@ def main():
     texts = load_pg19_texts(args.data_dir, args.num_samples)
     
     # Evaluate based on mode
-    if args.mode == "baseline":
+    if args.mode in ["baseline", "int8_baseline"]:
         # Use chunked evaluation for baseline (efficient)
         results = evaluate_ppl_chunked(model, tokenizer, texts, args)
     else:
