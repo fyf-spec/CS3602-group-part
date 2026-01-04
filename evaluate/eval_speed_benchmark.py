@@ -76,7 +76,11 @@ def parse_args():
         default="baseline",
         help="KV cache strategy to use"
     )
-    
+    parser.add_argument(
+        "--prefill_len",
+        type=int,
+        default=128
+    )
     # Sequence length settings
     parser.add_argument(
         "--seq_lengths",
@@ -395,7 +399,7 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
     peak_mem_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
     
     return {
-        "seq_length": int(seq_length),
+        "seq_length": int(num_decode_tokens),
         "kv_cache_size": int(kv_size),
         "avg_decode_latency_ms": avg_latency_ms,
         "std_decode_latency_ms": std_latency_ms,
@@ -519,8 +523,8 @@ def main():
         
         try:
             result = benchmark_at_seq_length(
-                model, tokenizer, seq_length,
-                args.num_decode_tokens, kv_cache, args.mode
+                model, tokenizer, 128,
+                seq_length, kv_cache, args.mode
             )
             results.append(result)
             
