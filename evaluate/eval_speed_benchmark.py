@@ -280,6 +280,7 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
     2. Decode num_decode_tokens more tokens, measuring latency
     3. Return average decode latency
     """
+    torch.cuda.reset_peak_memory_stats(device)
     # Reset cache state if applicable
     if hasattr(kv_cache, 'reset'):
         kv_cache.reset()
@@ -380,6 +381,7 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
         
         current_pos += 1
     
+    
     # Get KV cache size
     if past_key_values is not None:
         kv_size = past_key_values[0][0].size(2)
@@ -390,6 +392,7 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
     avg_latency_ms = float(np.mean(decode_times)) * 1000
     std_latency_ms = float(np.std(decode_times)) * 1000
     total_latency_ms = float(np.sum(decode_times)) * 1000
+    peak_mem_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
     
     return {
         "seq_length": int(seq_length),
@@ -398,6 +401,7 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
         "std_decode_latency_ms": std_latency_ms,
         "total_decode_latency_ms": total_latency_ms,
         "tokens_per_sec": 1000 / avg_latency_ms if avg_latency_ms > 0 else 0,
+        "peak_memory_mb": peak_mem_mb,
     }
 
 
@@ -523,6 +527,7 @@ def main():
             print(f"  KV Cache Size: {result['kv_cache_size']}")
             print(f"  Avg Decode Latency: {result['avg_decode_latency_ms']:.2f} ± {result['std_decode_latency_ms']:.2f} ms")
             print(f"  Throughput: {result['tokens_per_sec']:.1f} tokens/sec")
+            print(f"  Peal Memory Usage: {result['peak_memory_mb']:.1f} MB")
             
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
@@ -550,10 +555,10 @@ def main():
     
     # Print summary table
     print(f"\n{'='*80}")
-    print(f"{'Seq Length':>12} {'KV Cache':>12} {'Latency (ms)':>15} {'Tokens/sec':>15}")
+    print(f"{'Seq Length':>12} {'KV Cache':>12} {'Latency (ms)':>15} {'Tokens/sec':>15} {'Peak GPU Memory Usage (MB)':>15}")
     print(f"{'='*80}")
     for r in results:
-        print(f"{r['seq_length']:>12} {r['kv_cache_size']:>12} {r['avg_decode_latency_ms']:>15.2f} {r['tokens_per_sec']:>15.1f}")
+        print(f"{r['seq_length']:>12} {r['kv_cache_size']:>12} {r['avg_decode_latency_ms']:>15.2f} {r['tokens_per_sec']:>15.1f} {r['peak_memory_mb']:>15.1f}")
     print(f"{'='*80}")
     
     # Summary

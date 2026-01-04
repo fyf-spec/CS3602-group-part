@@ -1,0 +1,7 @@
+{
+  "mode": "baseline",
+  "ppl": 10.821078300476074,
+  "num_tokens": 20470,
+  "num_samples": 10,
+  "context_length": 512
+}
