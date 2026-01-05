@@ -8,14 +8,13 @@ This script compares decode latency across multiple modes:
 4. LazyH2O: Periodic H2O (attention-based eviction every N steps)
 5. INT8 modes: INT8 weight-only quantization combined with KV cache strategies
 
+Experiment Setup:
+- prefill_len: Number of tokens to prefill (default: 128)
+- decode_lengths: Number of tokens to decode and measure latency (e.g., 256, 512, 1024, 2048)
+
 Usage:
-    python evaluate/eval_speed_benchmark.py --mode baseline
-    python evaluate/eval_speed_benchmark.py --mode streaming
-    python evaluate/eval_speed_benchmark.py --mode h2o
-    python evaluate/eval_speed_benchmark.py --mode lazy_h2o --update_interval 10
-    python evaluate/eval_speed_benchmark.py --mode sepllm --separator_size 64 --local_size 256
-    python evaluate/eval_speed_benchmark.py --mode unified --separator_size 64 --heavy_size 128 --local_size 256
-    python evaluate/eval_speed_benchmark.py --mode int8_lazy_unified --ckpt_dir checkpoints/pythia-2.8b-int8
+    python evaluate/eval_speed_benchmark.py --mode baseline --decode_lengths 256 512 1024 2048
+    python evaluate/eval_speed_benchmark.py --mode int8_lazy_unified --decode_lengths 2048
 """
 
 import sys
@@ -76,20 +75,19 @@ def parse_args():
         default="baseline",
         help="KV cache strategy to use"
     )
-    
-    # Sequence length settings
     parser.add_argument(
-        "--seq_lengths",
+        "--prefill_len",
+        type=int,
+        default=128,
+        help="Number of tokens to prefill before decoding (fixed)"
+    )
+    # Decode length settings
+    parser.add_argument(
+        "--decode_lengths",
         type=int,
         nargs="+",
         default=[256, 512, 1024, 2048],
-        help="Sequence lengths to benchmark"
-    )
-    parser.add_argument(
-        "--num_decode_tokens",
-        type=int,
-        default=128,
-        help="Number of decode tokens to measure average latency"
+        help="Number of tokens to decode and measure latency"
     )
     
     # Cache configuration (shared across modes)
@@ -98,6 +96,8 @@ def parse_args():
     
     # H2O specific
     parser.add_argument("--heavy_size", type=int, default=128, help="Number of Heavy Hitter tokens (H2O/LazyH2O)")
+    parser.add_argument("--heavy_ratio", type=float, default=None, 
+                        help="H2O retention ratio (0.0-1.0). If set, overrides heavy_size with: heavy_size = middle_region * ratio")
     
     # LazyH2O specific
     parser.add_argument("--update_interval", type=int, default=10, help="H2O update interval (LazyH2O only)")
@@ -138,10 +138,40 @@ def load_model(model_name_or_path):
     return model, tokenizer
 
 
-def setup_cache(model, tokenizer, args):
-    """Setup KV cache based on mode"""
+def compute_heavy_size_from_ratio(args, max_seq_len):
+    """
+    Compute heavy_size from heavy_ratio if specified.
+    
+    The middle region = max_seq_len - start_size - recent_size
+    heavy_size = middle_region * heavy_ratio
+    """
+    if args.heavy_ratio is not None:
+        middle_region = max_seq_len - args.start_size - args.recent_size
+        middle_region = max(0, middle_region)
+        computed_heavy = int(middle_region * args.heavy_ratio)
+        print(f"Heavy ratio mode: ratio={args.heavy_ratio}, middle_region={middle_region}, computed_heavy_size={computed_heavy}")
+        return computed_heavy
+    return args.heavy_size
+
+
+def setup_cache(model, tokenizer, args, max_seq_len=None):
+    """
+    Setup KV cache based on mode.
+    
+    Args:
+        model: The model to setup cache for
+        tokenizer: Tokenizer for separator detection
+        args: Command line arguments
+        max_seq_len: Maximum sequence length (used for computing heavy_size from ratio)
+    """
     mode = args.mode
     kv_cache = None
+    
+    # Compute heavy_size from ratio if specified
+    if max_seq_len is not None:
+        heavy_size = compute_heavy_size_from_ratio(args, max_seq_len)
+    else:
+        heavy_size = args.heavy_size if args.heavy_ratio is None else args.heavy_size
     
     if mode == "baseline":
         # No cache eviction, no position shift
@@ -166,11 +196,11 @@ def setup_cache(model, tokenizer, args):
         kv_cache = H2OKVCache(
             start_size=args.start_size,
             recent_size=args.recent_size,
-            heavy_size=args.heavy_size,
+            heavy_size=heavy_size,
             k_seq_dim=k_seq_dim,
             v_seq_dim=v_seq_dim,
         )
-        print(f"Mode: H2O (start={args.start_size}, recent={args.recent_size}, heavy={args.heavy_size})")
+        print(f"Mode: H2O (start={args.start_size}, recent={args.recent_size}, heavy={heavy_size})")
         
     elif mode == "lazy_h2o":
         # LazyH2O: Periodic H2O
@@ -179,13 +209,13 @@ def setup_cache(model, tokenizer, args):
         kv_cache = LazyH2OKVCache(
             start_size=args.start_size,
             recent_size=args.recent_size,
-            heavy_size=args.heavy_size,
+            heavy_size=heavy_size,
             update_interval=args.update_interval,
             k_seq_dim=k_seq_dim,
             v_seq_dim=v_seq_dim,
         )
         print(f"Mode: LazyH2O (start={args.start_size}, recent={args.recent_size}, "
-              f"heavy={args.heavy_size}, interval={args.update_interval})")
+              f"heavy={heavy_size}, interval={args.update_interval})")
     
     elif mode == "sepllm":
         # SepLLM: Separator-aware eviction
@@ -209,13 +239,13 @@ def setup_cache(model, tokenizer, args):
             tokenizer=tokenizer,
             start_size=args.start_size,
             separator_size=args.separator_size,
-            heavy_size=args.heavy_size,
+            heavy_size=heavy_size,
             local_size=args.local_size,
             k_seq_dim=k_seq_dim,
             v_seq_dim=v_seq_dim,
         )
         print(f"Mode: Unified (start={args.start_size}, sep={args.separator_size}, "
-              f"heavy={args.heavy_size}, local={args.local_size})")
+              f"heavy={heavy_size}, local={args.local_size})")
     
     elif mode == "lazy_unified":
         # LazyUnified: Periodic update version of Unified
@@ -225,14 +255,14 @@ def setup_cache(model, tokenizer, args):
             tokenizer=tokenizer,
             start_size=args.start_size,
             separator_size=args.separator_size,
-            heavy_size=args.heavy_size,
+            heavy_size=heavy_size,
             local_size=args.local_size,
             update_interval=args.update_interval,
             k_seq_dim=k_seq_dim,
             v_seq_dim=v_seq_dim,
         )
         print(f"Mode: LazyUnified (start={args.start_size}, sep={args.separator_size}, "
-              f"heavy={args.heavy_size}, local={args.local_size}, interval={args.update_interval})")
+              f"heavy={heavy_size}, local={args.local_size}, interval={args.update_interval})")
     
     elif mode == "int8_baseline":
         # INT8 baseline: no KV cache eviction
@@ -246,14 +276,14 @@ def setup_cache(model, tokenizer, args):
             tokenizer=tokenizer,
             start_size=args.start_size,
             separator_size=args.separator_size,
-            heavy_size=args.heavy_size,
+            heavy_size=heavy_size,
             local_size=args.local_size,
             update_interval=args.update_interval,
             k_seq_dim=k_seq_dim,
             v_seq_dim=v_seq_dim,
         )
         print(f"Mode: INT8 + LazyUnified (start={args.start_size}, sep={args.separator_size}, "
-              f"heavy={args.heavy_size}, local={args.local_size}, interval={args.update_interval})")
+              f"heavy={heavy_size}, local={args.local_size}, interval={args.update_interval})")
     
     return kv_cache
 
@@ -271,15 +301,20 @@ def generate_random_input(tokenizer, total_tokens, device="cuda"):
     return input_ids
 
 
-def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_cache, mode, device="cuda"):
+def benchmark_at_decode_length(model, tokenizer, prefill_len, decode_len, kv_cache, mode, device="cuda"):
     """
-    Benchmark decode latency at a specific sequence length.
+    Benchmark decode latency for a specific decode length.
+    
+    Args:
+        prefill_len: Number of tokens to prefill
+        decode_len: Number of tokens to decode (measure latency)
     
     Process:
-    1. Prefill with (seq_length - 1) tokens
-    2. Decode num_decode_tokens more tokens, measuring latency
+    1. Prefill with (prefill_len - 1) tokens
+    2. Decode decode_len tokens, measuring latency
     3. Return average decode latency
     """
+    torch.cuda.reset_peak_memory_stats(device)
     # Reset cache state if applicable
     if hasattr(kv_cache, 'reset'):
         kv_cache.reset()
@@ -290,13 +325,13 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
             kv_cache.accumulated_scores = None
     
     # Generate random input
-    total_tokens = seq_length + num_decode_tokens
+    total_tokens = prefill_len + decode_len
     input_ids = generate_random_input(tokenizer, total_tokens, device)
     
     past_key_values = None
     
-    # Prefill phase: process (seq_length - 1) tokens at once
-    prefill_size = seq_length - 1
+    # Prefill phase: process (prefill_len - 1) tokens at once
+    prefill_size = prefill_len - 1
     prefill_ids = input_ids[:, :prefill_size]
     
     with torch.no_grad():
@@ -343,11 +378,11 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
             else:
                 past_key_values = kv_cache(past_key_values)
     
-    # Measure decode latency for num_decode_tokens more tokens
+    # Measure decode latency for decode_len tokens
     decode_times = []
-    current_pos = seq_length
+    current_pos = prefill_len
     
-    for i in range(num_decode_tokens):
+    for i in range(decode_len):
         next_token = input_ids[:, current_pos:current_pos+1]
         
         torch.cuda.synchronize()
@@ -380,6 +415,7 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
         
         current_pos += 1
     
+    
     # Get KV cache size
     if past_key_values is not None:
         kv_size = past_key_values[0][0].size(2)
@@ -390,14 +426,17 @@ def benchmark_at_seq_length(model, tokenizer, seq_length, num_decode_tokens, kv_
     avg_latency_ms = float(np.mean(decode_times)) * 1000
     std_latency_ms = float(np.std(decode_times)) * 1000
     total_latency_ms = float(np.sum(decode_times)) * 1000
+    peak_mem_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
     
     return {
-        "seq_length": int(seq_length),
+        "decode_length": int(decode_len),
+        "prefill_length": int(prefill_len),
         "kv_cache_size": int(kv_size),
         "avg_decode_latency_ms": avg_latency_ms,
         "std_decode_latency_ms": std_latency_ms,
         "total_decode_latency_ms": total_latency_ms,
         "tokens_per_sec": 1000 / avg_latency_ms if avg_latency_ms > 0 else 0,
+        "peak_memory_mb": peak_mem_mb,
     }
 
 
@@ -488,8 +527,9 @@ def main():
     else:
         model, tokenizer = load_model(args.model_name_or_path)
     
-    # Setup cache based on mode
-    kv_cache = setup_cache(model, tokenizer, args)
+    # Setup cache based on mode (pass max seq length for ratio computation)
+    max_seq_len = args.prefill_len + max(args.decode_lengths)
+    kv_cache = setup_cache(model, tokenizer, args, max_seq_len=max_seq_len)
     
     print(f"\n{'='*60}")
     print(f"Speed Benchmark Configuration")
@@ -499,34 +539,39 @@ def main():
     if is_int8_mode:
         print(f"INT8 Checkpoint: {args.ckpt_dir}")
     print(f"Cache Config: start={args.start_size}, recent={args.recent_size}")
-    if args.mode in ["h2o", "lazy_h2o"]:
-        print(f"  heavy_size: {args.heavy_size}")
-    if args.mode == "lazy_h2o":
+    if args.mode in ["h2o", "lazy_h2o", "unified", "lazy_unified", "int8_lazy_unified"]:
+        if args.heavy_ratio is not None:
+            computed_heavy = compute_heavy_size_from_ratio(args, max_seq_len)
+            print(f"  heavy_ratio: {args.heavy_ratio} (computed heavy_size: {computed_heavy})")
+        else:
+            print(f"  heavy_size: {args.heavy_size}")
+    if args.mode in ["lazy_h2o", "lazy_unified", "int8_lazy_unified"]:
         print(f"  update_interval: {args.update_interval}")
-    print(f"Sequence lengths: {args.seq_lengths}")
-    print(f"Decode tokens per test: {args.num_decode_tokens}")
+    print(f"Prefill length: {args.prefill_len}")
+    print(f"Decode lengths: {args.decode_lengths}")
     print(f"{'='*60}\n")
     
     # Run benchmarks
     results = []
     
-    for seq_length in tqdm(args.seq_lengths, desc="Benchmarking"):
-        print(f"\nTesting sequence length: {seq_length}")
+    for decode_len in tqdm(args.decode_lengths, desc="Benchmarking"):
+        print(f"\nTesting: prefill={args.prefill_len}, decode={decode_len}")
         
         try:
-            result = benchmark_at_seq_length(
-                model, tokenizer, seq_length,
-                args.num_decode_tokens, kv_cache, args.mode
+            result = benchmark_at_decode_length(
+                model, tokenizer, args.prefill_len,
+                decode_len, kv_cache, args.mode
             )
             results.append(result)
             
             print(f"  KV Cache Size: {result['kv_cache_size']}")
             print(f"  Avg Decode Latency: {result['avg_decode_latency_ms']:.2f} ± {result['std_decode_latency_ms']:.2f} ms")
             print(f"  Throughput: {result['tokens_per_sec']:.1f} tokens/sec")
+            print(f"  Peak Memory Usage: {result['peak_memory_mb']:.1f} MB")
             
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
-                print(f"  [OOM] Skipping seq_length={seq_length}")
+                print(f"  [OOM] Skipping decode_len={decode_len}")
                 torch.cuda.empty_cache()
                 continue
             else:
@@ -549,12 +594,12 @@ def main():
     plot_results(results, args.output_dir, args.mode, args)
     
     # Print summary table
-    print(f"\n{'='*80}")
-    print(f"{'Seq Length':>12} {'KV Cache':>12} {'Latency (ms)':>15} {'Tokens/sec':>15}")
-    print(f"{'='*80}")
+    print(f"\n{'='*90}")
+    print(f"{'Decode Len':<12} {'Prefill':<10} {'KV Cache':<12} {'Latency (ms)':<15} {'Tokens/sec':<15} {'Peak Mem (MB)':<15}")
+    print(f"{'='*90}")
     for r in results:
-        print(f"{r['seq_length']:>12} {r['kv_cache_size']:>12} {r['avg_decode_latency_ms']:>15.2f} {r['tokens_per_sec']:>15.1f}")
-    print(f"{'='*80}")
+        print(f"{r['decode_length']:<12} {r['prefill_length']:<10} {r['kv_cache_size']:<12} {r['avg_decode_latency_ms']:<15.2f} {r['tokens_per_sec']:<15.1f} {r['peak_memory_mb']:<15.1f}")
+    print(f"{'='*90}")
     
     # Summary
     print(f"\n📊 Summary ({args.mode}):")
