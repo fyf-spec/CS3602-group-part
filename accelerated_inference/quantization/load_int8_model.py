@@ -135,15 +135,62 @@ def load_int8_model(model_path, ckpt_dir, dtype=torch.bfloat16, device="cuda"):
         trust_remote_code=True,
     )
     
+    print(f"Model Before Quantization: {model}")
+    
     # Load INT8 checkpoint
     wq, sc, b = load_quantized_checkpoint(ckpt_dir)
-    print(f"Loaded {len(wq)} quantized layers from checkpoint")
+    print(f"Loaded {len(wq)} quantized layers from checkpoint")        
+    for name, m in list(model.named_modules()):
+        if "mlp" in name and isinstance(m, torch.nn.Module):
+            # Check if it has the standard GPT-NeoX MLP structure
+            if hasattr(m, "dense_h_to_4h") and hasattr(m, "dense_4h_to_h") and hasattr(m, "act"):
+                # Fuse Activation into dense_h_to_4h
+                # 1. Replace dense_h_to_4h with Int8Linear(act_type="gelu")
+                linear_name = name + ".dense_h_to_4h"
+                if linear_name in wq:
+                    old_linear = m.dense_h_to_4h
+                    new_linear = Int8Linear(
+                        in_features=old_linear.in_features,
+                        out_features=old_linear.out_features,
+                        bias=(old_linear.bias is not None),
+                        device=device,
+                        dtype=dtype,
+                        act_type="gelu"
+                    )
+                    new_linear.Wq = wq[linear_name].to(device)
+                    new_linear.scale = sc[linear_name].to(device)
+                    if old_linear.bias is not None and linear_name in b:
+                        new_linear.bias = b[linear_name].to(device).to(dtype)
+                        
+                    m.dense_h_to_4h = new_linear
+                    # 2. Replace act with Identity
+                    m.act = torch.nn.Identity()
+                        
+                    # 3. Replace dense_4h_to_h with standard Int8Linear
+                    linear_name_2 = name + ".dense_4h_to_h"
+                    if linear_name_2 in wq:
+                        old_linear_2 = m.dense_4h_to_h
+                        new_linear_2 = Int8Linear(
+                            in_features=old_linear_2.in_features,
+                            out_features=old_linear_2.out_features,
+                            bias=(old_linear_2.bias is not None),
+                            device=device,
+                            dtype=dtype,
+                            act_type="none"
+                        )
+                        new_linear_2.Wq = wq[linear_name_2].to(device)
+                        new_linear_2.scale = sc[linear_name_2].to(device)
+                        if old_linear_2.bias is not None and linear_name_2 in b:
+                            new_linear_2.bias = b[linear_name_2].to(device).to(dtype)
+                        m.dense_4h_to_h = new_linear_2
     
     # Replace Linear with Int8Linear
     replaced_count = replace_linear_with_int8(model, wq, sc, b, dtype, device)
     print(f"Replaced {replaced_count} Linear layers with Int8Linear")
     
     model.eval()
+    
+    print(f"Model After Quantization: {model}")
     
     return model, tokenizer
 

@@ -61,6 +61,13 @@ def parse_args():
         default="dataset/pg19",
         help="Directory containing PG-19 txt files"
     )
+    
+    parser.add_argument(
+        "--max_context_length",
+        type=int,
+        default=2048,
+        help="Maximum context length for evaluation"
+    )
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -394,7 +401,7 @@ def evaluate_ppl_streaming(model, tokenizer, texts, kv_cache, need_attention, ne
     os.makedirs(args.output_dir, exist_ok=True)
     
     print(f"Using streaming evaluation (token-by-token with KV cache)")
-    
+    max_context = args.max_context_length
     for sample_idx, sample in enumerate(texts):
         filename = sample["filename"]
         text = sample["text"]
@@ -406,6 +413,12 @@ def evaluate_ppl_streaming(model, tokenizer, texts, kv_cache, need_attention, ne
         input_ids = encodings.input_ids.to(device)
         seq_len = input_ids.size(1)
         print(f"  Sequence length: {seq_len} tokens")
+        
+        if input_ids.size(1) > max_context:
+            input_ids = input_ids[:, :max_context]
+            
+        seq_len = input_ids.size(1)
+        print(f"  Truncated sequence length: {seq_len} tokens")
         
         # Reset KV cache for each document
         past_key_values = None
@@ -538,10 +551,11 @@ def main():
     # Load PG-19 texts
     texts = load_pg19_texts(args.data_dir, args.num_samples)
     
+    # Previously we use evaluate_ppl_chunk for baseline, but now we unify the evaluation
     # Evaluate based on mode
     if args.mode in ["baseline", "int8_baseline"]:
         # Use chunked evaluation for baseline (efficient)
-        results = evaluate_ppl_chunked(model, tokenizer, texts, args)
+        results = evaluate_ppl_streaming(model, tokenizer, texts, kv_cache, need_attention, need_input_ids, args)
     else:
         # Use streaming evaluation for KV cache eviction methods
         results = evaluate_ppl_streaming(model, tokenizer, texts, kv_cache, need_attention, need_input_ids, args)

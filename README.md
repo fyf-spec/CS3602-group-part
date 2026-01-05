@@ -30,9 +30,9 @@
 conda create -n accel_infer python=3.10 -y
 conda activate accel_infer
 
-# 安装 PyTorch (CUDA 12.8 示例)
-pip install torch>=2.0.0 --index-url https://download.pytorch.org/whl/cu128
-
+# 安装第三方库
+pip install torch
+pip install accelerate
 # 基础安装 (仅 Python，无 INT8)
 pip install -e .
 
@@ -46,7 +46,7 @@ pip install -e . --no-build-isolation
 
 ```bash
 python -m accelerated_inference.quantization.quantize \
-    --model_path pythia-2.8b-local \
+    --model_path /home/xlyu/models/models--EleutherAI--pythia-2.8b/ \
     --out_dir checkpoints/pythia-2.8b-int8
 ```
 
@@ -67,10 +67,10 @@ python evaluate/eval_ppl_pg19.py --mode int8_lazy_unified \
 ### 3. 速度 Benchmark
 
 ```bash
-python evaluate/eval_speed_benchmark.py --mode baseline
-python evaluate/eval_speed_benchmark.py --mode int8_baseline --ckpt_dir checkpoints/pythia-2.8b-int8
+python evaluate/eval_speed_benchmark.py --mode baseline  --model_name_or_path $Your_Local_Path 
+python evaluate/eval_speed_benchmark.py --mode int8_baseline --ckpt_dir checkpoints/pythia-2.8b-int8 --model_name_or_path /home/xlyu/models/models--EleutherAI--pythia-2.8b/
 python evaluate/eval_speed_benchmark.py --mode int8_lazy_unified \
-    --ckpt_dir checkpoints/pythia-2.8b-int8
+    --ckpt_dir checkpoints/pythia-2.8b-int8 --model_name_or_path /home/xlyu/models/models--EleutherAI--pythia-2.8b/
 ```
 
 

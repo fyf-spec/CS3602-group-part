@@ -1,0 +1,12 @@
+{
+  "mode": "int8_lazy_unified",
+  "ppl": 11.593559265136719,
+  "num_tokens": 20470,
+  "num_samples": 10,
+  "config": {
+    "start_size": 4,
+    "recent_size": 252,
+    "heavy_size": null,
+    "update_interval": null
+  }
+}

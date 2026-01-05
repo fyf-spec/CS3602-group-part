@@ -1,0 +1,59 @@
+{
+  "config": {
+    "model_name_or_path": "/home/xlyu/models/models--EleutherAI--pythia-2.8b/",
+    "output_dir": "outputs/speed_benchmark",
+    "mode": "int8_baseline",
+    "seq_lengths": [
+      256,
+      512,
+      1024,
+      2048
+    ],
+    "num_decode_tokens": 128,
+    "start_size": 4,
+    "recent_size": 252,
+    "heavy_size": 128,
+    "update_interval": 10,
+    "separator_size": 64,
+    "local_size": 256,
+    "ckpt_dir": "checkpoints/pythia-2.8b-int8"
+  },
+  "results": [
+    {
+      "seq_length": 256,
+      "kv_cache_size": 384,
+      "avg_decode_latency_ms": 29.20965832015554,
+      "std_decode_latency_ms": 1.0339439069578105,
+      "total_decode_latency_ms": 7477.672529959818,
+      "tokens_per_sec": 34.23525154041155,
+      "peak_memory_mb": 3359.0458984375
+    },
+    {
+      "seq_length": 512,
+      "kv_cache_size": 640,
+      "avg_decode_latency_ms": 29.157715382922333,
+      "std_decode_latency_ms": 0.7030738249753062,
+      "total_decode_latency_ms": 14928.750276056235,
+      "tokens_per_sec": 34.2962398414006,
+      "peak_memory_mb": 3575.2041015625
+    },
+    {
+      "seq_length": 1024,
+      "kv_cache_size": 1152,
+      "avg_decode_latency_ms": 28.869677601676358,
+      "std_decode_latency_ms": 0.32655252004898294,
+      "total_decode_latency_ms": 29562.54986411659,
+      "tokens_per_sec": 34.638419375418785,
+      "peak_memory_mb": 4061.29296875
+    },
+    {
+      "seq_length": 2048,
+      "kv_cache_size": 2176,
+      "avg_decode_latency_ms": 31.343988016608648,
+      "std_decode_latency_ms": 10.078989421779573,
+      "total_decode_latency_ms": 64192.48745801451,
+      "tokens_per_sec": 31.904044867236323,
+      "peak_memory_mb": 5098.54833984375
+    }
+  ]
+}
